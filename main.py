@@ -1,6 +1,12 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
+from bson import ObjectId
+
+from database import db, create_document, get_documents
+from schemas import Order
 
 app = FastAPI()
 
@@ -33,37 +39,65 @@ def test_database():
     }
     
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
             response["database_url"] = "✅ Configured"
             response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = collections[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
                 response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
             
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:50]}"
     
-    # Check environment variables
     import os
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
     
     return response
 
+# -------- Orders API --------
+
+class OrderCreate(BaseModel):
+    customer_name: str
+    email: str
+    selected_package: str
+    price_eur: int
+    notes: str | None = None
+
+@app.post("/api/orders")
+def create_order(order: OrderCreate):
+    try:
+        order_doc = Order(
+            customer_name=order.customer_name,
+            email=order.email,
+            selected_package=order.selected_package,  # validated by schema Literal
+            price_eur=order.price_eur,
+            notes=order.notes,
+            status="reserved",
+        )
+        inserted_id = create_document("order", order_doc)
+        return {"ok": True, "order_id": inserted_id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/orders")
+def list_orders(limit: int = 20):
+    try:
+        docs = get_documents("order", {}, limit)
+        # convert ObjectId
+        for d in docs:
+            if isinstance(d.get("_id"), ObjectId):
+                d["_id"] = str(d["_id"])
+        return {"ok": True, "items": docs}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
